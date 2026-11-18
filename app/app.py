@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from predict import load_trained_model, predict_image
 from preprocessing import InvalidImageError
+import db
 
 MODEL_PATH = ROOT / "models" / "final_model.keras"
 COMPARISON_PATH = ROOT / "results" / "final_model_comparison.csv"
@@ -60,6 +61,18 @@ google_auth_configured = all(
 )
 is_logged_in = google_auth_configured and st.user.is_logged_in
 
+# ---- database: who is signed in, and are they an admin? ----
+user_email = (st.user.email or "").lower() if is_logged_in else ""
+try:
+    admin_emails = [e.lower() for e in st.secrets.get("app", {}).get("admin_emails", [])]
+except StreamlitSecretNotFoundError:
+    admin_emails = []
+is_admin = bool(user_email) and user_email in admin_emails
+
+if is_logged_in and not st.session_state.get("login_recorded"):
+    db.record_login(user_email, st.user.name)          # one record per person, updated each sign-in
+    st.session_state.login_recorded = True
+
 st.title("PawLens", icon=":material/pets:")
 st.markdown("### A closer look at your furry friends")
 st.caption(
@@ -72,6 +85,8 @@ with st.sidebar:
     st.header("Your account", icon=":material/account_circle:")
     if is_logged_in:
         st.success(f"Signed in as {st.user.name or st.user.email}")
+        if is_admin:
+            st.caption("Admin access enabled.")
         if st.button("Sign out", icon=":material/logout:", width="stretch"):
             st.logout()
     else:
@@ -112,10 +127,13 @@ with st.sidebar:
                     "then add your credentials to `.streamlit/secrets.toml`."
                 )
     st.caption("Uploaded images are analyzed by the local model.")
+    if is_logged_in:
+        st.caption("Signed-in users: prediction results (not images) are saved to your history.")
 
-classifier_tab, insights_tab, history_tab = st.tabs(
-    ["Classifier", "Model insights", "History"]
-)
+tab_names = ["Classifier", "Model insights", "History"] + (["Admin"] if is_admin else [])
+tabs = st.tabs(tab_names)
+classifier_tab, insights_tab, history_tab = tabs[:3]
+admin_tab = tabs[3] if is_admin else None
 
 with classifier_tab:
     st.subheader("Try an image", icon=":material/center_focus_strong:")
@@ -167,15 +185,16 @@ with classifier_tab:
                     "confidence": confidence,
                 }
                 st.session_state.last_result = result
-                st.session_state.history.append(
-                    {
-                        "file": result["file"],
-                        "prediction": label,
-                        "prob_dog": round(prob_dog, 4),
-                        "prob_cat": round(prob_cat, 4),
-                        "confidence": round(confidence, 4),
-                    }
-                )
+                history_row = {
+                    "file": result["file"],
+                    "prediction": label,
+                    "prob_dog": round(prob_dog, 4),
+                    "prob_cat": round(prob_cat, 4),
+                    "confidence": round(confidence, 4),
+                }
+                st.session_state.history.append(history_row)
+                if is_logged_in:
+                    db.save_prediction(user_email, history_row)    # saved to MongoDB
                 if is_uncertain:
                     st.toast(
                         "The model is unsure. Try a clearer photo.",
@@ -249,14 +268,38 @@ with insights_tab:
         st.error(f"Could not load the saved model information: {error}")
 
 with history_tab:
-    st.subheader("Your session history", icon=":material/history:")
-    if st.session_state.history:
+    st.subheader("Your history", icon=":material/history:")
+    saved = db.load_predictions(user_email) if is_logged_in else None
+    if saved is not None:
+        # signed in + database connected: history persists across sessions
+        st.caption("Saved to your account. It stays here after you close the browser.")
+        if saved:
+            history = pd.DataFrame(saved)
+            st.dataframe(history, hide_index=True)
+            st.download_button(
+                "Download history as CSV",
+                data=history.to_csv(index=False).encode("utf-8"),
+                file_name="pawlens_prediction_history.csv",
+                mime="text/csv",
+                icon=":material/download:",
+            )
+            if st.button("Delete my saved history", icon=":material/delete:"):
+                db.delete_predictions(user_email)
+                st.session_state.history = []
+                st.session_state.last_result = None
+                st.rerun()
+        else:
+            st.info("No saved predictions yet. Analyze an image to start your history.",
+                    icon=":material/history:")
+    elif st.session_state.history:
+        # guest, or database unavailable: session-only history
+        st.caption("Session history only (sign in to keep it between visits)."
+                   if not is_logged_in else "Database unavailable: showing this session only.")
         history = pd.DataFrame(st.session_state.history)
         st.dataframe(history, hide_index=True)
-        csv_data = history.to_csv(index=False).encode("utf-8")
         st.download_button(
             "Download history as CSV",
-            data=csv_data,
+            data=history.to_csv(index=False).encode("utf-8"),
             file_name="pawlens_prediction_history.csv",
             mime="text/csv",
             icon=":material/download:",
@@ -270,3 +313,29 @@ with history_tab:
             "Predictions from this browser session will show up here.",
             icon=":material/history:",
         )
+
+if admin_tab is not None:
+    with admin_tab:
+        st.subheader("Admin: signed-in users", icon=":material/admin_panel_settings:")
+        users = db.list_users()
+        if users is None:
+            st.error(f"MongoDB is not connected. {db.db_error() or 'Check the [mongo] secrets.'}")
+        else:
+            stats = db.prediction_stats() or {"total": 0, "by_label": {}}
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Registered users", len(users), border=True)
+            c2.metric("Total predictions", stats["total"], border=True)
+            c3.metric("Cat / Dog",
+                      f"{stats['by_label'].get('Cat', 0)} / {stats['by_label'].get('Dog', 0)}",
+                      border=True)
+            if users:
+                st.dataframe(pd.DataFrame(users), hide_index=True)
+                st.download_button(
+                    "Download users as CSV",
+                    data=pd.DataFrame(users).to_csv(index=False).encode("utf-8"),
+                    file_name="pawlens_users.csv",
+                    mime="text/csv",
+                    icon=":material/download:",
+                )
+            else:
+                st.info("Nobody has signed in yet.")
