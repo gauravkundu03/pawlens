@@ -1,0 +1,10 @@
+# extra packages only needed to re-run the training notebook / src modules locally
+-r requirements.txt
+matplotlib
+seaborn
+scikit-learn
+scikit-image
+scipy
+joblib
+opencv-python-headless
+jupyter

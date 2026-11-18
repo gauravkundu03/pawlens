@@ -1,0 +1,10 @@
+{
+  "final_model": "Transfer Learning",
+  "img_size": 128,
+  "classes": [
+    "Cat",
+    "Dog"
+  ],
+  "preprocessing": "RGB, bilinear resize 128x128, normalization inside model (Rescaling)",
+  "seed": 42
+}
