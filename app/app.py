@@ -61,6 +61,43 @@ google_auth_configured = all(
 )
 is_logged_in = google_auth_configured and st.user.is_logged_in
 
+if not google_auth_configured:
+    st.title("PawLens", icon=":material/pets:")
+    st.error(
+        "Google sign-in is not configured. Add the Google OAuth settings to "
+        "Streamlit secrets, then restart the app."
+    )
+    st.caption(
+        "See the Google sign-in section in the project README for the required settings."
+    )
+    st.stop()
+
+if not is_logged_in:
+    st.title("PawLens", icon=":material/pets:")
+    st.subheader("Sign in to use the cat and dog classifier")
+    st.caption(
+        "Continue with Google to access image predictions and your account history. "
+        "New users can create a Google account during Google's sign-in flow."
+    )
+    account_mode = st.segmented_control(
+        "Account",
+        options=["Sign in", "Create account"],
+        default="Sign in",
+        key="account_mode",
+    )
+    button_label = (
+        "Continue with Google"
+        if account_mode == "Sign in"
+        else "Create account with Google"
+    )
+    if st.button(
+        button_label,
+        type="primary",
+        icon=":material/login:",
+    ):
+        st.login("google")
+    st.stop()
+
 # ---- database: who is signed in, and are they an admin? ----
 user_email = (st.user.email or "").lower() if is_logged_in else ""
 try:
