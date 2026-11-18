@@ -1,7 +1,8 @@
-# --- runtime (used by Streamlit Cloud deployment) ---
 streamlit[auth]>=1.42
 tensorflow-cpu>=2.20
 keras>=3.13
 numpy
 pandas
 pillow
+pymongo[srv]
+dnspython
